@@ -1,0 +1,203 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Plan
+// ============================================
+model Plan {
+  id                  String    @id @default(uuid())
+  code                String    @unique
+  nameAr              String
+  nameEn              String
+  monthlySessionLimit Int
+  productLimit        Int
+  featureFlagsJson    Json      @default("{}")
+  createdAt           DateTime  @default(now())
+  companies           Company[]
+
+  @@map("plans")
+}
+
+// ============================================
+// Company (Tenant)
+// ============================================
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  planId    String
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+
+  plan           Plan            @relation(fields: [planId], references: [id])
+  users          User[]
+  apiTokens      ApiToken[]
+  products       Product[]
+  assets         Asset[]
+  productConfigs ProductConfig[]
+  sessions       Session[]
+  events         Event[]
+  invoices       Invoice[]
+
+  @@map("companies")
+}
+
+// ============================================
+// User
+// ============================================
+model User {
+  id           String   @id @default(uuid())
+  companyId    String?
+  email        String   @unique
+  passwordHash String
+  role         String   @default("company_staff")
+  name         String
+  createdAt    DateTime @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@map("users")
+}
+
+// ============================================
+// ApiToken
+// ============================================
+model ApiToken {
+  id         String    @id @default(uuid())
+  companyId  String
+  name       String
+  tokenHash  String    @unique
+  scopesJson Json      @default("[\"viewer\"]")
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@map("api_tokens")
+}
+
+// ============================================
+// Product
+// ============================================
+model Product {
+  id        String   @id @default(uuid())
+  companyId String
+  sku       String
+  nameAr    String
+  nameEn    String
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+
+  company  Company         @relation(fields: [companyId], references: [id])
+  assets   Asset[]
+  configs  ProductConfig[]
+  sessions Session[]
+
+  @@unique([companyId, sku])
+  @@map("products")
+}
+
+// ============================================
+// Asset
+// ============================================
+model Asset {
+  id        String   @id @default(uuid())
+  companyId String
+  productId String
+  type      String
+  path      String
+  sizeBytes Int      @default(0)
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("assets")
+}
+
+// ============================================
+// ProductConfig
+// ============================================
+model ProductConfig {
+  id                   String   @id @default(uuid())
+  companyId            String
+  productId            String
+  viewerType           String   @default("placement")
+  scale                Float    @default(1.0)
+  rotationOffsetJson   Json     @default("{}")
+  positionOffsetJson   Json     @default("{}")
+  placementSettingsJson Json    @default("{}")
+  tryonSettingsJson    Json     @default("{}")
+  updatedAt            DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([companyId, productId, viewerType])
+  @@map("product_configs")
+}
+
+// ============================================
+// Session
+// ============================================
+model Session {
+  id          String    @id @default(uuid())
+  companyId   String
+  productId   String
+  sku         String
+  viewerType  String
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  durationSec Int?
+  deviceJson  Json      @default("{}")
+  referrer    String?
+
+  company Company @relation(fields: [companyId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+  events  Event[]
+
+  @@map("sessions")
+}
+
+// ============================================
+// Event
+// ============================================
+model Event {
+  id          String   @id @default(uuid())
+  companyId   String
+  sessionId   String
+  type        String
+  payloadJson Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@map("events")
+}
+
+// ============================================
+// Invoice
+// ============================================
+model Invoice {
+  id            String   @id @default(uuid())
+  companyId     String
+  month         Int
+  year          Int
+  sessionsCount Int      @default(0)
+  amountSar     Float    @default(0)
+  status        String   @default("draft")
+  createdAt     DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, month, year])
+  @@map("invoices")
+}
