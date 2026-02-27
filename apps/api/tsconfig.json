@@ -9,7 +9,6 @@
     "target": "ES2021",
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "./src",
     "baseUrl": "./",
     "incremental": true,
     "skipLibCheck": true,
@@ -21,7 +20,9 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@ar-core/shared": ["../../packages/shared/dist"],
+      "@ar-core/shared/*": ["../../packages/shared/dist/*"]
     }
   },
   "include": ["src/**/*"],
