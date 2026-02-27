@@ -1,42 +1,50 @@
-FROM node:20-alpine AS base
+FROM node:20-alpine AS build
 WORKDIR /app
 
-# Install ALL workspace dependencies in one go
-FROM base AS deps
-COPY package.json ./
-COPY apps/api/package.json ./apps/api/
+# Copy all package manifests + workspace root
+COPY package.json package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/
-RUN npm install --include-workspace-root
+COPY apps/api/package.json ./apps/api/
 
-# Build shared package first (produces dist/ with types + JS)
-FROM deps AS build-shared
+# Install all dependencies (creates workspace symlinks)
+RUN npm ci --include-workspace-root 2>/dev/null || npm install --include-workspace-root
+
+# Copy shared source and build it
 COPY packages/shared/ ./packages/shared/
 RUN npm run build --workspace=packages/shared
 
-# Build API (shared is already built, symlink in node_modules resolves it)
-FROM build-shared AS build
+# Verify the workspace symlink resolves
+RUN ls -la node_modules/@ar-core/shared && ls node_modules/@ar-core/shared/dist/index.d.ts
+
+# Copy API source and build it
 COPY apps/api/ ./apps/api/
 RUN npx prisma generate --schema=./apps/api/prisma/schema.prisma
 RUN npm run build --workspace=apps/api
 
-# Production image
-FROM base AS runner
+# ---- Production image ----
+FROM node:20-alpine AS runner
+WORKDIR /app
 ENV NODE_ENV=production
 
-# Copy root node_modules (has workspace symlinks)
-COPY --from=build /app/node_modules ./node_modules
+# Copy everything needed at runtime
 COPY --from=build /app/package.json ./package.json
 
-# Copy shared package (the symlink in node_modules/@ar-core/shared points here)
+# Shared package
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
-COPY --from=build /app/packages/shared/node_modules ./packages/shared/node_modules
 
-# Copy API
+# API
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/prisma ./apps/api/prisma
-COPY --from=build /app/apps/api/node_modules ./apps/api/node_modules
+
+# Root node_modules (runtime deps)
+COPY --from=build /app/node_modules ./node_modules
+
+# Re-create the workspace symlink (COPY --from doesn't preserve symlinks across stages)
+RUN mkdir -p node_modules/@ar-core && \
+    rm -rf node_modules/@ar-core/shared && \
+    ln -s ../../packages/shared node_modules/@ar-core/shared
 
 RUN mkdir -p /app/uploads
 

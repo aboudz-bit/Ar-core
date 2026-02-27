@@ -1,26 +1,26 @@
-FROM node:20-alpine AS base
+FROM node:20-alpine AS build
 WORKDIR /app
 
-# Install dependencies
-FROM base AS deps
-COPY package.json ./
+# Copy all package manifests
+COPY package.json package-lock.json ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
-RUN npm install --workspace=packages/shared --workspace=apps/web --include-workspace-root
+
+# Install all dependencies (creates workspace symlinks)
+RUN npm ci --include-workspace-root 2>/dev/null || npm install --include-workspace-root
 
 # Build shared package
-FROM deps AS build-shared
 COPY packages/shared/ ./packages/shared/
 RUN npm run build --workspace=packages/shared
 
 # Build web
-FROM build-shared AS build
 COPY apps/web/ ./apps/web/
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build --workspace=apps/web
 
-# Production image
-FROM base AS runner
+# ---- Production image ----
+FROM node:20-alpine AS runner
+WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
