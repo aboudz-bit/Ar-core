@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "nest build",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "dev": "nest start --watch",
     "start": "node dist/main",
     "db:generate": "prisma generate",
