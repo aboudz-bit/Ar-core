@@ -37,11 +37,16 @@ export class ViewerController {
 
       const { product } = await this.viewerService.getViewerData(companySlug, sku);
 
-      // Return viewer HTML
-      const config = product.configs[0];
-      const glbAsset = product.assets.find((a) => a.type === 'placement_glb' || a.type === 'tryon_glb');
+      // Resolve base URL from the incoming request (works on LAN / tunnels)
+      const proto = res.req.headers['x-forwarded-proto'] || res.req.protocol || 'http';
+      const host = res.req.headers['x-forwarded-host'] || res.req.headers.host;
+      const baseUrl = `${proto}://${host}`;
 
-      const html = this.generateViewerHtml(product, config, glbAsset, companySlug);
+      const config = product.configs[0];
+      const glbAsset = product.assets.find((a: any) => a.type === 'placement_glb' || a.type === 'tryon_glb');
+      const usdzAsset = product.assets.find((a: any) => a.type === 'usdz');
+
+      const html = this.generateViewerHtml(product, config, glbAsset, usdzAsset, companySlug, baseUrl);
       res.setHeader('Content-Type', 'text/html');
       return res.send(html);
     } catch (error: any) {
@@ -101,13 +106,17 @@ export class ViewerController {
     return { success: true };
   }
 
-  // Embed.js
+  // Embed.js — derives API_URL from the script src so it works from any host/IP
   @Get('embed.js')
   async embedScript(@Res() res: Response) {
-    const apiUrl = process.env.API_URL || 'http://localhost:4000';
-
     const js = `(function(){
-  var API_URL = "${apiUrl}";
+  // Derive API base from this script's own src URL
+  var scripts = document.getElementsByTagName('script');
+  var thisScript = null;
+  for (var i = 0; i < scripts.length; i++) {
+    if (scripts[i].src && scripts[i].src.indexOf('embed.js') !== -1) { thisScript = scripts[i]; break; }
+  }
+  var API_URL = thisScript ? thisScript.src.replace(/\\/embed\\.js.*$/, '') : '';
 
   function init() {
     var elements = document.querySelectorAll('[data-ar-sku]');
@@ -143,6 +152,7 @@ export class ViewerController {
       var iframe = document.createElement('iframe');
       iframe.src = url;
       iframe.style.cssText = 'width:90%;max-width:500px;height:80%;border:none;border-radius:16px;';
+      iframe.setAttribute('allow', 'camera;xr-spatial-tracking;accelerometer;gyroscope');
       overlay.appendChild(close);
       overlay.appendChild(iframe);
       document.body.appendChild(overlay);
@@ -157,115 +167,183 @@ export class ViewerController {
 })();`;
 
     res.setHeader('Content-Type', 'application/javascript');
+    res.setHeader('Cache-Control', 'public, max-age=300');
     res.send(js);
   }
 
-  private generateViewerHtml(product: any, config: any, glbAsset: any, companySlug: string): string {
-    const apiUrl = process.env.API_URL || 'http://localhost:4000';
-    const assetUrl = glbAsset ? `${apiUrl}/uploads/${glbAsset.path}` : '';
+  private generateViewerHtml(
+    product: any,
+    config: any,
+    glbAsset: any,
+    usdzAsset: any,
+    companySlug: string,
+    baseUrl: string,
+  ): string {
+    const glbUrl = glbAsset ? `${baseUrl}/uploads/${glbAsset.path}` : '';
+    const usdzUrl = usdzAsset ? `${baseUrl}/uploads/${usdzAsset.path}` : '';
     const viewerType = config?.viewerType || 'placement';
     const scale = config?.scale || 1;
+
+    // iOS Quick Look needs USDZ via ios-src; falls back to GLB-only scene-viewer on Android
+    const iosSrcAttr = usdzUrl ? `ios-src="${usdzUrl}"` : '';
+    // Prefer quick-look first so iOS picks it up; scene-viewer for Android; webxr as fallback
+    const arModes = 'quick-look scene-viewer webxr';
+
+    const hasModel = !!(glbUrl || usdzUrl);
+    const srcAttr = glbUrl ? `src="${glbUrl}"` : (usdzUrl ? `src="${usdzUrl}"` : '');
 
     return `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>${product.nameAr} - عارض الواقع المعزز</title>
-  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.3.0/model-viewer.min.js"></script>
+  <!-- model-viewer: Web Component for 3D/AR -->
+  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"><\/script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0f172a; color: #fff; height: 100vh; display: flex; flex-direction: column; direction: rtl; }
-    .header { padding: 16px; text-align: center; background: #1e293b; }
-    .header h1 { font-size: 18px; font-weight: 600; }
-    .header p { font-size: 13px; color: #94a3b8; margin-top: 4px; }
-    .viewer-container { flex: 1; position: relative; }
-    model-viewer { width: 100%; height: 100%; }
-    .controls { padding: 16px; background: #1e293b; display: flex; gap: 12px; justify-content: center; }
-    .controls button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-family: inherit; transition: all 0.2s; }
+    html, body { height: 100%; overflow: hidden; -webkit-text-size-adjust: 100%; }
+    body { font-family: -apple-system, 'Segoe UI', Tahoma, sans-serif; background: #0f172a; color: #fff; display: flex; flex-direction: column; direction: rtl; }
+    .header { padding: 12px 16px; text-align: center; background: #1e293b; flex-shrink: 0; }
+    .header h1 { font-size: 17px; font-weight: 600; }
+    .header p { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+    .viewer-container { flex: 1; position: relative; min-height: 0; }
+    model-viewer { width: 100%; height: 100%; --poster-color: #0f172a; }
+    model-viewer::part(default-ar-button) { display: none; }
+    .controls { padding: 12px 16px; background: #1e293b; display: flex; gap: 10px; justify-content: center; flex-shrink: 0;
+      padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+    .controls button { padding: 12px 24px; border: none; border-radius: 10px; cursor: pointer; font-size: 15px; font-weight: 500;
+      font-family: inherit; transition: all 0.2s; -webkit-tap-highlight-color: transparent; }
     .btn-ar { background: #6366f1; color: #fff; }
-    .btn-ar:hover { background: #4f46e5; }
+    .btn-ar:active { background: #4f46e5; transform: scale(0.97); }
     .btn-capture { background: #334155; color: #fff; }
-    .btn-capture:hover { background: #475569; }
-    .mode-badge { position: absolute; top: 16px; right: 16px; background: #6366f1; color: #fff; padding: 6px 14px; border-radius: 20px; font-size: 13px; z-index: 10; }
-    .status { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.7); padding: 8px 16px; border-radius: 8px; font-size: 13px; display: none; }
+    .btn-capture:active { background: #475569; }
+    .mode-badge { position: absolute; top: 12px; right: 12px; background: #6366f1; color: #fff; padding: 5px 12px;
+      border-radius: 20px; font-size: 12px; z-index: 10; pointer-events: none; }
+    .status { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.75);
+      padding: 8px 18px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity 0.3s; z-index: 10; pointer-events: none; }
+    .status.visible { opacity: 1; }
+    .no-model { display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8;
+      flex-direction: column; gap: 12px; padding: 32px; text-align: center; }
+    .no-model svg { width: 64px; height: 64px; opacity: 0.3; }
+    @supports (padding: env(safe-area-inset-bottom)) {
+      .controls { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>${product.nameAr}</h1>
-    <p>SKU: ${product.sku}</p>
+    <p>${product.nameEn} &mdash; ${product.sku}</p>
   </div>
   <div class="viewer-container">
     <span class="mode-badge">${viewerType === 'tryon' ? 'تجربة ارتداء' : 'وضع في المكان'}</span>
-    ${assetUrl ? `<model-viewer
-      src="${assetUrl}"
+    ${hasModel ? `<model-viewer
+      ${srcAttr}
+      ${iosSrcAttr}
       alt="${product.nameAr}"
       ar
-      ar-modes="webxr scene-viewer quick-look"
+      ar-modes="${arModes}"
+      ar-scale="auto"
       camera-controls
       touch-action="pan-y"
       auto-rotate
-      shadow-intensity="1"
+      rotation-per-second="20deg"
+      shadow-intensity="1.2"
+      environment-image="neutral"
+      exposure="1"
       scale="${scale} ${scale} ${scale}"
-      style="width:100%;height:100%;">
-      <button slot="ar-button" style="background:#6366f1;color:#fff;border:none;padding:10px 20px;border-radius:8px;position:absolute;bottom:16px;left:50%;transform:translateX(-50%);">
-        عرض في مكانك
-      </button>
-    </model-viewer>` : '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;">لا يوجد نموذج ثلاثي الأبعاد</div>'}
+      loading="eager"
+      reveal="auto">
+    </model-viewer>` : `<div class="no-model">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9"/></svg>
+      <p>لم يتم رفع نموذج ثلاثي الأبعاد بعد.<br>ارفع ملف GLB أو USDZ من لوحة التحكم.</p>
+    </div>`}
     <div class="status" id="status"></div>
   </div>
   <div class="controls">
-    <button class="btn-ar" onclick="activateAR()">📱 عرض بالواقع المعزز</button>
-    <button class="btn-capture" onclick="capture()">📸 التقاط صورة</button>
+    ${hasModel ? `<button class="btn-ar" id="arBtn">عرض بالواقع المعزز</button>` : ''}
+    ${hasModel ? `<button class="btn-capture" id="captureBtn">التقاط صورة</button>` : ''}
   </div>
   <script>
-    var API_URL = "${apiUrl}";
-    var companySlug = "${companySlug}";
-    var sku = "${product.sku}";
-    var sessionId = null;
+    (function() {
+      var BASE = "${baseUrl}";
+      var companySlug = "${companySlug}";
+      var sku = "${product.sku}";
+      var viewerType = "${viewerType}";
+      var sessionId = null;
+      var mv = document.querySelector('model-viewer');
 
-    // Start session
-    fetch(API_URL + '/api/viewer/session/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        companySlug: companySlug,
-        sku: sku,
-        viewerType: '${viewerType}',
-        device: { userAgent: navigator.userAgent, screen: screen.width + 'x' + screen.height },
-        referrer: document.referrer
-      })
-    }).then(r => r.json()).then(d => { if (d.success) sessionId = d.data.sessionId; });
+      // ---- Session tracking ----
+      fetch(BASE + '/api/viewer/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companySlug: companySlug, sku: sku, viewerType: viewerType,
+          device: { ua: navigator.userAgent, w: screen.width, h: screen.height, touch: 'ontouchstart' in window },
+          referrer: document.referrer || null
+        })
+      }).then(function(r) { return r.json(); })
+        .then(function(d) { if (d.success) sessionId = d.data.sessionId; })
+        .catch(function() {});
 
-    // End session on unload
-    window.addEventListener('beforeunload', function() {
-      if (sessionId) {
-        navigator.sendBeacon(API_URL + '/api/viewer/session/end', JSON.stringify({ sessionId: sessionId }));
+      // End session
+      function endSession() {
+        if (!sessionId) return;
+        var body = JSON.stringify({ sessionId: sessionId });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(BASE + '/api/viewer/session/end', new Blob([body], { type: 'application/json' }));
+        }
       }
-    });
+      window.addEventListener('pagehide', endSession);
+      window.addEventListener('beforeunload', endSession);
+      document.addEventListener('visibilitychange', function() { if (document.hidden) endSession(); });
 
-    function activateAR() {
-      var mv = document.querySelector('model-viewer');
-      if (mv && mv.canActivateAR) { mv.activateAR(); }
-      showStatus('جاري تشغيل الواقع المعزز...');
-    }
+      // ---- AR activation ----
+      var arBtn = document.getElementById('arBtn');
+      if (arBtn && mv) {
+        arBtn.addEventListener('click', function() {
+          if (mv.canActivateAR) {
+            mv.activateAR();
+          } else {
+            showStatus('AR غير مدعوم على هذا الجهاز');
+          }
+        });
+      }
 
-    function capture() {
-      var mv = document.querySelector('model-viewer');
+      // ---- Screenshot ----
+      var captureBtn = document.getElementById('captureBtn');
+      if (captureBtn && mv) {
+        captureBtn.addEventListener('click', function() {
+          if (mv.toBlob) {
+            mv.toBlob({ idealAspect: true }).then(function(blob) {
+              var a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = sku + '-ar.png';
+              a.click();
+              URL.revokeObjectURL(a.href);
+              showStatus('تم حفظ الصورة');
+            });
+          }
+        });
+      }
+
+      // ---- Status toast ----
+      function showStatus(msg) {
+        var el = document.getElementById('status');
+        el.textContent = msg;
+        el.classList.add('visible');
+        setTimeout(function() { el.classList.remove('visible'); }, 3000);
+      }
+
+      // Log AR activation
       if (mv) {
-        var blob = mv.toBlob && mv.toBlob();
-        showStatus('تم التقاط الصورة');
+        mv.addEventListener('ar-status', function(e) {
+          if (e.detail.status === 'session-started') showStatus('تم تشغيل الواقع المعزز');
+        });
       }
-    }
-
-    function showStatus(msg) {
-      var el = document.getElementById('status');
-      el.textContent = msg;
-      el.style.display = 'block';
-      setTimeout(function() { el.style.display = 'none'; }, 3000);
-    }
-  </script>
+    })();
+  <\/script>
 </body>
 </html>`;
   }
